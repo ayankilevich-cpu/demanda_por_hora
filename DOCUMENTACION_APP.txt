@@ -1,0 +1,354 @@
+================================================================================
+  GRIDO STAFFING PLANNER (MVP) — Documentación completa
+================================================================================
+
+Versión: 1.0 — Febrero 2026
+Autor: Generado con asistencia de IA a partir de datos reales de enero 2026.
+
+================================================================================
+  1. ¿QUÉ ES ESTA APP?
+================================================================================
+
+Es un planificador de dotación de personal para heladerías Grido. Dado un
+objetivo de venta mensual en kilogramos (minorista), la app calcula:
+
+  - Cuántos empleados se necesitan.
+  - Cuántas personas deben estar presentes en cada hora de cada día.
+  - Un mapa de calor visual (heatmap) con la distribución óptima.
+  - Métricas de productividad por colaborador (kg/día, kg/mes).
+  - Un umbral de saturación constante para decidir cuándo sumar o reducir
+    personal según la estacionalidad.
+
+La app está pensada para que un franquiciado o consultor ingrese únicamente
+el objetivo de kg del mes y obtenga un plan de dotación completo, sin
+necesidad de compartir datos históricos detallados.
+
+
+================================================================================
+  2. ¿CÓMO FUNCIONA POR DENTRO? (Modelo de cálculo)
+================================================================================
+
+El modelo se basa en tres pilares:
+
+  A) CURVA DE DEMANDA
+     ─────────────────
+     Se usa una distribución de probabilidad p(día_de_semana, hora) que indica
+     qué porcentaje de la venta total ocurre en cada combinación día×hora.
+
+     Ejemplo: sábados de 23:00 a 00:00 concentran ~2.6% de la venta total,
+     mientras que lunes de 11:00 a 12:00 concentran ~0.2%.
+
+     Esta curva se derivó del archivo infdetventas13226.xlsx (tickets con
+     timestamp) y se usa como proxy para cualquier mes futuro.
+
+  B) PRODUCTIVIDAD DE REFERENCIA (KPPH)
+     ────────────────────────────────────
+     Para cada hora del día se calculó cuántos kg se vendieron por cada
+     hora-persona trabajada (kg per person-hour = KPPH). Se derivó cruzando:
+       - Los kg estimados por hora (del detalle de ventas).
+       - Las horas-persona programadas (del archivo de HORARIOS).
+
+     Ejemplo: a las 20:00 la productividad es ~5.3 kg/hora-persona en Centro,
+     pero a las 11:00 baja a ~3.9 porque hay menos clientes pero se mantiene
+     el mínimo de personal.
+
+  C) FACTOR DE MIX DE PRODUCTO
+     ──────────────────────────
+     No todos los kg requieren el mismo esfuerzo:
+       - 1 kg de BOCHAS/CUCURUCHOS: ~60 segundos (servir, armar, cobrar).
+       - 1 kg de BOMBONES EN CAJA: ~15 segundos (sacar del freezer, entregar).
+
+     Se clasificaron todos los productos en tres categorías:
+       🍦 Alta mano de obra: bochas, cucuruchos, kilos, batidos, gigantes.
+       🍡 Intermedia: palitos sueltos, postres sueltos, bombones sueltos.
+       📦 Baja mano de obra: familiares, tortas, cajas de bombones/palitos.
+
+     Composición real de enero 2026:
+       - Centro (Edén):  64% alta / 23% media / 13% baja → Factor = 1.00
+       - Barrio (España): 49% alta / 25% media / 26% baja → Factor = 1.20
+
+     El factor se aplica multiplicando la productividad: un local con factor
+     1.20 significa que cada persona puede despachar 20% más kg porque una
+     proporción mayor son productos envasados.
+
+
+  FÓRMULA DE CÁLCULO POR HORA
+  ────────────────────────────
+
+  Para cada slot (fecha, hora):
+
+    1. kg_hora = kg_objetivo_mes × margen_demanda × p(dow, hora) / Σ pesos
+
+    2. kpph_efectivo = kpph_referencia[hora] × factor_mix × eficiencia
+
+    3. personas_requeridas = ceil(kg_hora / kpph_efectivo)
+
+    4. personas_requeridas = max(personas_requeridas, mínimo_base)
+       Si hora ∈ horas_pico: max(personas_requeridas, mínimo_pico)
+
+  Luego se suman todas las horas-persona del mes y se convierte a empleados:
+
+    empleados = ceil(horas_persona_total / horas_mes_por_empleado)
+
+
+  UMBRAL DE SATURACIÓN (CONSTANTE)
+  ─────────────────────────────────
+  Es la cantidad máxima de kg que un colaborador puede cubrir por mes:
+
+    umbral = kpph_overall × factor_mix × eficiencia × horas_mes_por_empleado
+
+  Este número NO cambia con el objetivo de kg. Es una constante operativa.
+  Sirve para planificar estacionalidad:
+
+    - Si en febrero vendés 6000 kg y el umbral es 833 → ceil(6000/833) = 8 emp.
+    - Si en junio vendés 3000 kg → ceil(3000/833) = 4 empleados.
+
+  Si la venta real por persona supera el umbral → el equipo está saturado.
+
+
+================================================================================
+  3. TIPOS DE LOCAL
+================================================================================
+
+La app distingue dos arquetipos, derivados de la referencia:
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │ CENTRO / ALTO TRÁNSITO (referencia: EDÉN, La Falda)                │
+  │ · Mayor tráfico de paso (turistas, peatones).                      │
+  │ · Mix con más productos servidos (bochas, cucuruchos).             │
+  │ · Productividad base más alta (4.63 kpph).                         │
+  │ · Factor de mix: 1.00 (baseline).                                  │
+  ├──────────────────────────────────────────────────────────────────────┤
+  │ BARRIO (referencia: ESPAÑA, L Falda II)                            │
+  │ · Menor tráfico, clientes del barrio.                              │
+  │ · Mix con más productos envasados (cajas, familiares, tortas).     │
+  │ · Productividad base más baja (3.02 kpph).                         │
+  │ · Factor de mix: 1.20 (corrige por mix más fácil).                 │
+  └──────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+  4. ESCENARIOS
+================================================================================
+
+  "1 LOCAL"
+  ─────────
+  Se ingresa un objetivo de kg para un único local. Se elige el tipo
+  (Centro o Barrio) y la app calcula la dotación para ese local.
+
+  "2 LOCALES (CENTRO + BARRIO)"
+  ──────────────────────────────
+  El objetivo de kg se reparte entre ambos tipos según un porcentaje
+  configurable (por defecto 67% Centro / 33% Barrio, derivado de los
+  tickets reales de enero 2026). Se calcula la dotación para cada local
+  por separado y luego se muestra el total combinado.
+
+  Esto es útil cuando un franquiciado tiene 2 sucursales y maneja el
+  personal como un pool compartido.
+
+
+================================================================================
+  5. GUÍA DE USO PASO A PASO
+================================================================================
+
+  PASO 1: Elegir escenario
+  ────────────────────────
+  En el sidebar (panel lateral), seleccioná "1 local" o "2 locales".
+  Si tenés una sola heladería, usá "1 local" y elegí el tipo que mejor
+  la represente.
+
+  PASO 2: Definir año/mes y kg objetivo
+  ──────────────────────────────────────
+  Ingresá el año y mes para el cual querés planificar. Luego el objetivo
+  de kg minorista del mes. Este es el dato principal de entrada.
+
+  PASO 3: Configurar horario
+  ──────────────────────────
+  Definí la hora de apertura y cierre del local, y qué días abre.
+  Si el cierre es menor que la apertura (ej: abre 11:00, cierra 02:00),
+  se asume que cierra después de medianoche.
+
+  PASO 4: Ajustar mix de producto (si corresponde)
+  ─────────────────────────────────────────────────
+  Si tu local tiene un mix distinto al de referencia, ajustá el slider.
+  Valores de referencia:
+    · Centro: 1.00
+    · Barrio: 1.20
+    · Local solo de bochas/kilos: podría ser 0.85–0.90
+    · Local mayormente envasados: podría ser 1.30–1.50
+
+  PASO 5: Parámetros operativos (opcional)
+  ────────────────────────────────────────
+  · Margen de demanda (%): inflá los kg por si esperás picos imprevistos.
+    0% = sin margen (default). 10% = planificar para 10% más de demanda.
+
+  · Eficiencia: 1.0 = el equipo rinde como la referencia. Si tenés
+    personal menos experimentado, bajalo (ej: 0.85). Si es un equipo
+    muy aceitado, subilo (ej: 1.10).
+
+  · Mínimo personas por hora: cuántas personas deben estar como mínimo
+    en cualquier hora abierta (default: 1).
+
+  · Mínimo en horas pico (20–23): cuántas como mínimo en horas de
+    mayor demanda (default: 2).
+
+  PASO 6: Horas/mes por empleado
+  ──────────────────────────────
+  Cuántas horas trabaja en promedio un empleado por mes. Default: 180.
+  Ejemplos:
+    · Jornada completa 6 días/semana × 8h = ~208 h/mes
+    · Jornada mixta (algunos part-time) = ~160–180 h/mes
+
+  PASO 7: Leer resultados
+  ───────────────────────
+  La app muestra:
+
+  Fila 1 — Métricas principales:
+    · Kg planificados (ajustado): kg totales con el margen aplicado.
+    · Empleados necesarios: headcount estimado.
+    · Máximo personas en una hora: el pico de dotación.
+
+  Fila 2 — Productividad por colaborador:
+    · Kg / colaborador / mes: carga promedio mensual.
+    · Kg / colaborador / día: carga promedio diaria.
+    · Horas-persona (mes): total de horas de trabajo del equipo.
+
+  Umbral de saturación:
+    · Máx. kg/colaborador/mes: constante operativa. Si un empleado
+      supera este número → el equipo está saturado, sumar gente.
+    · Capacidad del equipo actual: cuántos kg puede cubrir el equipo.
+    · Margen disponible: cuántos kg más antes de necesitar +1 persona.
+
+  Heatmaps:
+    · Un mapa de calor por tipo de local (en "2 locales", uno por cada
+      más un "TOTAL") que muestra visualmente cuántas personas se
+      necesitan por hora y día de la semana. Colores de amarillo (poco)
+      a rojo (mucho). El número dentro de cada celda es la cantidad
+      de colaboradores.
+
+  Tablas y plan detallado:
+    · Tabla resumen por día de semana y hora.
+    · Plan detallado fecha por fecha (útil para armar la grilla).
+
+  PASO 8: Descargar
+  ─────────────────
+  Se puede descargar el plan completo en CSV o Excel. El Excel incluye
+  una hoja "resumen" con todas las métricas (incluyendo las de saturación).
+
+
+================================================================================
+  6. PARÁMETROS Y SU IMPACTO
+================================================================================
+
+  ┌─────────────────────────────┬──────────────────────────────────────────┐
+  │ Parámetro                   │ Efecto al SUBIR                          │
+  ├─────────────────────────────┼──────────────────────────────────────────┤
+  │ Kg objetivo                 │ Más personas en todas las horas          │
+  │ Margen de demanda (%)       │ Más personas (planifica para más kg)     │
+  │ Eficiencia                  │ MENOS personas (equipo más productivo)   │
+  │ Factor mix de producto      │ MENOS personas (productos más fáciles)   │
+  │ Mínimo por hora             │ Más personas en horas de baja demanda    │
+  │ Mínimo en horas pico        │ Más personas en horas 20-23              │
+  │ Horas/mes por empleado      │ MENOS empleados (cada uno trabaja más)   │
+  └─────────────────────────────┴──────────────────────────────────────────┘
+
+
+================================================================================
+  7. LIMITACIONES Y SUPUESTOS
+================================================================================
+
+  1. La curva de demanda se basa en UN SOLO MES (enero 2026, temporada alta).
+     La distribución horaria puede variar en invierno (menos horas nocturnas).
+     El modelo la usa como proxy; lo correcto es actualizar la referencia
+     con datos de otros meses a medida que estén disponibles.
+
+  2. La productividad de referencia (kpph) también viene de enero 2026.
+     Si el equipo de referencia era particularmente eficiente o ineficiente,
+     el slider de "eficiencia" permite corregirlo.
+
+  3. No se modelan francos ni ausentismo explícitamente. El parámetro
+     "horas/mes por empleado" los captura indirectamente: si un empleado
+     trabaja 180h/mes, eso ya implica ~7-8 días libres. Pero no se
+     verifica que haya cobertura cada día individual.
+
+  4. El modelo no distingue roles (cajero, repositor, limpieza). Asume
+     que toda persona presente puede despachar kg.
+
+  5. La conversión de productos a categorías de mano de obra (alta/media/baja)
+     es una aproximación. El factor de mix es ajustable por eso.
+
+  6. En "2 locales", se asume que ambos locales comparten el mismo horario.
+     Si tienen horarios distintos, se recomienda usar "1 local" para cada
+     uno por separado.
+
+
+================================================================================
+  8. ARCHIVOS DE LA APP
+================================================================================
+
+  grido_staffing_app/
+  ├── app.py                              Código principal (Streamlit)
+  ├── requirements.txt                    Dependencias Python
+  ├── README.md                           Instrucciones de instalación
+  ├── DOCUMENTACION_APP.txt               Este archivo
+  └── reference/
+      └── grido_ref_2026_01.json          Datos de referencia (enero 2026)
+
+  El archivo JSON contiene:
+    - Curvas de demanda p(dow, hour) por tipo de local.
+    - Productividad kpph por hora y overall.
+    - Factor de mix de producto y detalle del mix.
+    - Metadata de cobertura y supuestos.
+
+
+================================================================================
+  9. CÓMO EJECUTAR LA APP
+================================================================================
+
+  Requisitos: Python 3.9+ instalado.
+
+  1. Crear entorno virtual (una sola vez):
+     python3 -m venv .venv
+     source .venv/bin/activate        (Mac/Linux)
+     .venv\Scripts\activate           (Windows)
+     pip install -r requirements.txt
+
+  2. Ejecutar:
+     cd grido_staffing_app
+     streamlit run app.py
+
+  3. Se abre automáticamente en http://localhost:8501
+
+
+================================================================================
+  10. EJEMPLO PRÁCTICO
+================================================================================
+
+  Situación: Un franquiciado tiene 2 locales (uno de centro, uno de barrio)
+  y espera vender 6000 kg en marzo.
+
+  Configuración:
+    · Escenario: "2 locales (Centro + Barrio)"
+    · Año: 2026, Mes: 3
+    · Kg objetivo: 6000
+    · Reparto: 67% Centro / 33% Barrio (default)
+    · Horario: 11:00 a 02:00, todos los días
+    · Mix: Centro 1.00, Barrio 1.20 (defaults)
+    · Eficiencia: 1.0
+    · Horas/mes por empleado: 180
+
+  Resultado esperado (aproximado):
+    · Centro recibe 4020 kg → ~5 empleados
+    · Barrio recibe 1980 kg → ~3 empleados
+    · Total: ~7-8 empleados
+    · Umbral de saturación: ~833 kg/emp/mes (Centro), ~651 kg/emp/mes (Barrio)
+    · Heatmap muestra pico de 4-5 personas los sábados de 21-23h en Centro
+
+  Si en verano la venta sube a 10000 kg con el mismo umbral:
+    · ceil(10000 × 0.67 / 833) + ceil(10000 × 0.33 / 651) ≈ 9 + 6 = ~13-14 emp.
+    → Hay que contratar temporarios para la temporada.
+
+
+================================================================================
+  FIN DEL DOCUMENTO
+================================================================================
